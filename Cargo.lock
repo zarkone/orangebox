@@ -534,6 +534,8 @@ dependencies = [
 name = "orangebox"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "hyper",
  "reqwest",
  "tokio",
 ]
