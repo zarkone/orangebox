@@ -11,7 +11,10 @@ async fn req(url: String) -> Result<HashMap<String, String>, Box<dyn std::error:
 
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
-    let conf = orangebox::Config::new().unwrap();
+    let conf = match orangebox::Config::new() {
+        Ok(conf) => conf,
+        Err(e) => return Err(e),
+    };
 
     println!("auth_token:: {}", conf.auth_token);
 
