@@ -57,6 +57,7 @@ impl<'de> Deserialize<'de> for WorkflowConclusion {
     }
 }
 
+#[derive(Debug, Deserialize)]
 struct WorkflowRun {
     logs_url: String,
     conclusion: WorkflowConclusion,
@@ -90,7 +91,11 @@ impl Error for AccessForbiddenError {
 // "conclusion": "success",
 
 //
-type GithubResponse = HashMap<String, String>;
+#[derive(Debug, Deserialize)]
+struct GithubResponse {
+    total_count: u32,
+    workflow_runs: Vec<WorkflowRun>,
+}
 
 fn make_api_url(repo: &String) -> String {
     format!(
@@ -128,7 +133,6 @@ async fn main() -> Result<(), &'static str> {
     };
 
     // println!("auth_token:: {}", conf.auth_token);
-
     let url = make_api_url(&REPO.to_string());
     // println!("{:?}", url);
     match req(url.to_string(), &conf).await {
