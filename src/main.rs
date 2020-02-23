@@ -132,12 +132,14 @@ async fn main() -> Result<(), &'static str> {
         Err(e) => return Err(e),
     };
 
-    // println!("auth_token:: {}", conf.auth_token);
     let url = make_api_url(&REPO.to_string());
-    // println!("{:?}", url);
+
     match req(url.to_string(), &conf).await {
-        Ok(resp) => println!("Success: \n {:#?}", resp),
-        Err(e) => eprintln!("{:?}", e),
+        Ok(resp) => eprintln!("Success: \n {:#?}", resp),
+        Err(e) => {
+            eprintln!("Error: \n {}", (*e).to_string());
+            return Err("Error");
+        }
     }
     Ok(())
 }
