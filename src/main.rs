@@ -1,8 +1,7 @@
 extern crate orangebox;
 
 use hyper::header::{AUTHORIZATION, USER_AGENT};
-use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt;
 use std::string::String;
@@ -92,7 +91,7 @@ impl Error for AccessForbiddenError {
 
 //
 #[derive(Debug, Deserialize)]
-struct GithubResponse {
+struct WorkflowRuns {
     total_count: u32,
     workflow_runs: Vec<WorkflowRun>,
 }
@@ -104,7 +103,10 @@ fn make_api_url(repo: &String) -> String {
     )
 }
 
-async fn req(url: String, conf: &orangebox::Config) -> Result<GithubResponse, Box<dyn Error>> {
+async fn req<T>(url: String, conf: &orangebox::Config) -> Result<T, Box<dyn Error>>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let username = "zarkone";
     let client = reqwest::Client::new();
     let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
@@ -122,8 +124,18 @@ async fn req(url: String, conf: &orangebox::Config) -> Result<GithubResponse, Bo
         return Err(Box::new(e));
     }
 
-    return Ok(resp.json::<GithubResponse>().await?);
+    return Ok(resp.json::<T>().await?);
 }
+
+// async fn get_last_run_logs(response: &WorkflowRuns, conf: &orangebox::Config) -> Option<Logs> {
+//     if response.total_count > 0 {
+//         let last_run = response.workflow_runs[0];
+//         let req(last_run, conf);
+//         return Some();
+//     } else {
+//         return None;
+//     }
+// }
 
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
@@ -134,12 +146,14 @@ async fn main() -> Result<(), &'static str> {
 
     let url = make_api_url(&REPO.to_string());
 
-    match req(url.to_string(), &conf).await {
-        Ok(resp) => eprintln!("Success: \n {:#?}", resp),
+    let github_response: WorkflowRuns = match req::<WorkflowRuns>(url.to_string(), &conf).await {
+        Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
             return Err("Error");
         }
-    }
+    };
+
+    println!("{:?}", github_response);
     Ok(())
 }
