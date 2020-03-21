@@ -1,10 +1,13 @@
 extern crate orangebox;
 
-use hyper::header::{AUTHORIZATION, USER_AGENT};
+use bytes::Bytes;
+use hyper::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt;
+use std::io::Cursor;
 use std::string::String;
+use zip::read::ZipArchive;
 
 // TODO: take from .git
 static REPO: &str = "zarkone/literally.el";
@@ -80,6 +83,7 @@ impl fmt::Display for AccessForbiddenError {
         write!(f, "{}", self.details)
     }
 }
+
 impl Error for AccessForbiddenError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
@@ -103,6 +107,7 @@ fn make_api_url(repo: &String) -> String {
     )
 }
 
+// Performs http request tospecified GitHub API `url`. Uses `conf` for API authorization
 async fn req<T>(url: String, conf: &orangebox::Config) -> Result<T, Box<dyn Error>>
 where
     T: for<'de> Deserialize<'de>,
@@ -113,6 +118,7 @@ where
     let resp = client
         .get(&url)
         .header(AUTHORIZATION, &encoded_token)
+        .header(ACCEPT, "application/vnd.github.antiope-preview+json")
         .header(USER_AGENT, username)
         .send()
         .await?;
@@ -127,10 +133,44 @@ where
     return Ok(resp.json::<T>().await?);
 }
 
+async fn req_zip(
+    url: &String,
+    conf: &orangebox::Config,
+) -> Result<ZipArchive<Cursor<Bytes>>, Box<dyn Error>> {
+    let username = "zarkone";
+    let client = reqwest::Client::new();
+    let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
+    let resp = client
+        .get(url)
+        .header(AUTHORIZATION, &encoded_token)
+        .header(ACCEPT, "application/vnd.github.antiope-preview+json")
+        .header(USER_AGENT, username)
+        .send()
+        .await?;
+
+    println!("-------- ZIP ---------- ");
+    println!("TOKEN::: {:?}, {:?}", &encoded_token, resp);
+    println!("URL::: {:?}", url);
+
+    if 403 == resp.status() {
+        let e = AccessForbiddenError::new(&resp.text().await?);
+        return Err(Box::new(e));
+    }
+
+    let zip_bytes = resp.bytes().await?;
+    let reader = Cursor::new(zip_bytes);
+
+    Ok(ZipArchive::new(reader)?)
+}
+
+// struct Logs {
+//     text: String,
+// }
+
 // async fn get_last_run_logs(response: &WorkflowRuns, conf: &orangebox::Config) -> Option<Logs> {
 //     if response.total_count > 0 {
-//         let last_run = response.workflow_runs[0];
-//         let req(last_run, conf);
+//         let last_run = response.workflow_runs[0].logs_url;
+//         let zip_file = req(last_run, conf);
 //         return Some();
 //     } else {
 //         return None;
@@ -143,7 +183,7 @@ async fn main() -> Result<(), &'static str> {
 
     let url = make_api_url(&REPO.to_string());
 
-    let github_response: WorkflowRuns = match req::<WorkflowRuns>(url.to_string(), &conf).await {
+    let workflow_runs: WorkflowRuns = match req::<WorkflowRuns>(url.to_string(), &conf).await {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
@@ -151,6 +191,20 @@ async fn main() -> Result<(), &'static str> {
         }
     };
 
-    println!("{:?}", github_response);
+    println!("{:?}", workflow_runs);
+
+    let last_run_logs_url = &workflow_runs.workflow_runs[0].logs_url;
+    let logs_zip: ZipArchive<Cursor<Bytes>> = match req_zip(last_run_logs_url, &conf).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!("Error: \n {}", (*e).to_string());
+            return Err("Error");
+        }
+    };
+
+    for fname in logs_zip.file_names() {
+        println!("Zip file: {:?}", fname);
+    }
+
     Ok(())
 }
