@@ -1,7 +1,7 @@
 extern crate orangebox;
 
 use bytes::Bytes;
-use hyper::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use hyper::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt;
@@ -89,6 +89,31 @@ impl Error for AccessForbiddenError {
         None
     }
 }
+
+#[derive(std::fmt::Debug)]
+struct UnexpectedReplyError {
+    details: String,
+}
+
+impl UnexpectedReplyError {
+    fn new(msg: &str) -> UnexpectedReplyError {
+        UnexpectedReplyError {
+            details: msg.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for UnexpectedReplyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl Error for UnexpectedReplyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
 // jobs_url
 // "status": "completed",
 // "conclusion": "success",
@@ -138,29 +163,43 @@ async fn req_zip(
     conf: &orangebox::Config,
 ) -> Result<ZipArchive<Cursor<Bytes>>, Box<dyn Error>> {
     let username = "zarkone";
-    let client = reqwest::Client::new();
     let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
-    let resp = client
-        .get(url)
-        .header(AUTHORIZATION, &encoded_token)
-        .header(ACCEPT, "application/vnd.github.antiope-preview+json")
-        .header(USER_AGENT, username)
-        .send()
-        .await?;
 
-    println!("-------- ZIP ---------- ");
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&encoded_token)?);
+    headers.insert(USER_AGENT, HeaderValue::from_static("zarkone"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github.antiope-preview+json"),
+    );
+
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    println!("{:?}", client.get(url));
+
+    let resp: reqwest::Response = client.get(url).send().await?;
+
     println!("TOKEN::: {:?}, {:?}", &encoded_token, resp);
-    println!("URL::: {:?}", url);
 
     if 403 == resp.status() {
         let e = AccessForbiddenError::new(&resp.text().await?);
         return Err(Box::new(e));
     }
 
-    let zip_bytes = resp.bytes().await?;
-    let reader = Cursor::new(zip_bytes);
+    if 302 == resp.status() {
+        let zip_location = String::from(resp.headers()[LOCATION].to_str()?);
+        let resp: reqwest::Response = client.get(&zip_location).send().await?;
+        let zip_bytes = resp.bytes().await?;
+        let reader = Cursor::new(zip_bytes);
 
-    Ok(ZipArchive::new(reader)?)
+        return Ok(ZipArchive::new(reader)?);
+    } else {
+        let e = UnexpectedReplyError::new(&resp.text().await?);
+        return Err(Box::new(e));
+    }
 }
 
 // struct Logs {
@@ -179,6 +218,7 @@ async fn req_zip(
 
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
+    env_logger::init();
     let conf = orangebox::Config::new()?;
 
     let url = make_api_url(&REPO.to_string());
