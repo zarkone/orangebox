@@ -139,7 +139,11 @@ where
 {
     let username = "zarkone";
     let client = reqwest::Client::new();
-    let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
+    let encoded_token = format!(
+        "Basic {}",
+        base64::encode(&format!("{}:{}", username, conf.auth_token))
+    );
+
     let resp = client
         .get(&url)
         .header(AUTHORIZATION, &encoded_token)
@@ -163,7 +167,10 @@ async fn req_zip(
     conf: &orangebox::Config,
 ) -> Result<ZipArchive<Cursor<Bytes>>, Box<dyn Error>> {
     let username = "zarkone";
-    let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
+    let encoded_token = format!(
+        "Basic {}",
+        base64::encode(&format!("{}:{}", username, conf.auth_token))
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, HeaderValue::from_str(&encoded_token)?);
