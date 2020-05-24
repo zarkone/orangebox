@@ -1,16 +1,21 @@
 extern crate orangebox;
 
-use bytes::Bytes;
+use bytes::{buf::BufExt, Buf, Bytes};
 use hyper::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
+use hyper::http::uri::Uri;
+use hyper::{Body, Client, Method, Request, Response};
+use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Deserializer};
+use std::convert::TryFrom;
 use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
+use std::io::Read;
 use std::string::String;
 use zip::read::ZipArchive;
 
 // TODO: take from .git
-static REPO: &str = "zarkone/literally.el";
+static REPO: &str = "zarkone/csv-to-fips-jsons";
 
 #[derive(std::fmt::Debug)]
 
@@ -71,9 +76,9 @@ struct AccessForbiddenError {
 }
 
 impl AccessForbiddenError {
-    fn new(msg: &str) -> AccessForbiddenError {
+    fn new(msg: &String) -> AccessForbiddenError {
         AccessForbiddenError {
-            details: msg.to_string(),
+            details: msg.clone(),
         }
     }
 }
@@ -163,41 +168,61 @@ async fn req_zip(
     conf: &orangebox::Config,
 ) -> Result<ZipArchive<Cursor<Bytes>>, Box<dyn Error>> {
     let username = "zarkone";
-    let encoded_token = base64::encode(&format!("{}:{}", username, conf.auth_token));
-
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&encoded_token)?);
-    headers.insert(USER_AGENT, HeaderValue::from_static("zarkone"));
-    headers.insert(
-        ACCEPT,
-        HeaderValue::from_static("application/vnd.github.antiope-preview+json"),
+    let encoded_token = format!(
+        "Basic {}",
+        base64::encode(&format!("{}:{}", username, conf.auth_token))
     );
 
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let req = Request::builder()
+        .uri(url)
+        .method(Method::GET)
+        .header("Authorization", HeaderValue::from_str(&encoded_token)?)
+        .header(USER_AGENT, HeaderValue::from_static("zarkone"))
+        .header(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github.antiope-preview+json"),
+        )
+        .body(Body::empty())
+        .expect("request builder");
 
-    println!("{:?}", client.get(url));
+    // TODO: move to hyper, fuck it
+    let https = HttpsConnector::new();
+    let client = Client::builder().build::<_, hyper::Body>(https);
 
-    let resp: reqwest::Response = client.get(url).send().await?;
+    println!("REQ::: {:?}", req);
 
-    println!("TOKEN::: {:?}, {:?}", &encoded_token, resp);
+    let res: Response<Body> = client.request(req).await?;
 
-    if 403 == resp.status() {
-        let e = AccessForbiddenError::new(&resp.text().await?);
+    println!("RES:::  {:?}", res);
+
+    if 403 == res.status() {
+        let body = hyper::body::aggregate(res).await?;
+        let mut body_reader = body.reader();
+        let mut bytes: Vec<u8> = Vec::new();
+        let size = body_reader.read_to_end(&mut bytes)?;
+
+        let e = AccessForbiddenError::new(&String::from(std::str::from_utf8(&bytes[..])?));
         return Err(Box::new(e));
     }
 
-    if 302 == resp.status() {
-        let zip_location = String::from(resp.headers()[LOCATION].to_str()?);
-        let resp: reqwest::Response = client.get(&zip_location).send().await?;
-        let zip_bytes = resp.bytes().await?;
-        let reader = Cursor::new(zip_bytes);
+    if 302 == res.status() {
+        let zip_location = Uri::try_from(res.headers()[LOCATION].to_str()?)?;
+        let res = client.get(zip_location).await?;
+        let body = hyper::body::aggregate(res).await?;
+        let mut body_reader = body.reader();
+        let mut zip_bytes: Vec<u8> = Vec::new();
+        let size = body_reader.read_to_end(&mut zip_bytes)?;
+        print!("size: {}", size);
+        let reader = Cursor::new(Bytes::from(zip_bytes));
 
         return Ok(ZipArchive::new(reader)?);
     } else {
-        let e = UnexpectedReplyError::new(&resp.text().await?);
+        let body = hyper::body::aggregate(res).await?;
+        let mut body_reader = body.reader();
+        let mut bytes: Vec<u8> = Vec::new();
+        let size = body_reader.read_to_end(&mut bytes)?;
+
+        let e = UnexpectedReplyError::new(&String::from(std::str::from_utf8(&bytes[..])?));
         return Err(Box::new(e));
     }
 }
@@ -227,7 +252,7 @@ async fn main() -> Result<(), &'static str> {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
-            return Err("Error");
+            return Err("Error getting worflow runs");
         }
     };
 
@@ -238,7 +263,7 @@ async fn main() -> Result<(), &'static str> {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
-            return Err("Error");
+            return Err("Error getting zip");
         }
     };
 
