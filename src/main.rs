@@ -2,12 +2,13 @@ extern crate orangebox;
 
 use bytes::Bytes;
 use hyper::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
+use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::string::String;
-use zip::read::ZipArchive;
+use zip::read::{ZipArchive, ZipFile};
 
 // TODO: take from .git
 static REPO: &str = "zarkone/literally.el";
@@ -209,19 +210,18 @@ async fn req_zip(
     }
 }
 
-// struct Logs {
-//     text: String,
-// }
-
-// async fn get_last_run_logs(response: &WorkflowRuns, conf: &orangebox::Config) -> Option<Logs> {
-//     if response.total_count > 0 {
-//         let last_run = response.workflow_runs[0].logs_url;
-//         let zip_file = req(last_run, conf);
-//         return Some();
-//     } else {
-//         return None;
-//     }
-// }
+fn print_file(file: &mut ZipFile) -> Result<(), &'static str> {
+    for byte in file.bytes() {
+        match byte {
+            Ok(b) => print!("{}", char::from(b)),
+            Err(e) => {
+                eprintln!("Error: \n {}", e.to_string());
+                return Err("Error");
+            }
+        };
+    }
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
@@ -241,7 +241,7 @@ async fn main() -> Result<(), &'static str> {
     println!("{:?}", workflow_runs);
 
     let last_run_logs_url = &workflow_runs.workflow_runs[0].logs_url;
-    let logs_zip: ZipArchive<Cursor<Bytes>> = match req_zip(last_run_logs_url, &conf).await {
+    let mut logs_zip: ZipArchive<Cursor<Bytes>> = match req_zip(last_run_logs_url, &conf).await {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
@@ -249,9 +249,13 @@ async fn main() -> Result<(), &'static str> {
         }
     };
 
-    for fname in logs_zip.file_names() {
-        println!("Zip file: {:?}", fname);
-    }
+    // for i in 0..logs_zip.len() {}
+    // let a = &workflow_runs.workflow_runs[0];
+
+    let mut file = logs_zip.by_index(0).unwrap();
+    println!("Filename: {}", file.name());
+
+    print_file(&mut file)?;
 
     Ok(())
 }
