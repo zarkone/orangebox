@@ -2,7 +2,6 @@ extern crate orangebox;
 
 use bytes::Bytes;
 use hyper::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
-use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use std::error::Error;
 use std::fmt;
@@ -63,6 +62,7 @@ impl<'de> Deserialize<'de> for WorkflowConclusion {
 #[derive(Debug, Deserialize)]
 struct WorkflowRun {
     logs_url: String,
+    jobs_url: String,
     conclusion: WorkflowConclusion,
 }
 
@@ -124,6 +124,28 @@ impl Error for UnexpectedReplyError {
 struct WorkflowRuns {
     total_count: u32,
     workflow_runs: Vec<WorkflowRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Step {
+    name: String,
+    status: String,
+    conclusion: String,
+    number: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Job {
+    name: String,
+    status: String,
+    conclusion: String,
+    steps: Vec<Step>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Jobs {
+    total_count: u32,
+    jobs: Vec<Job>,
 }
 
 fn make_api_url(repo: &String) -> String {
@@ -238,7 +260,18 @@ async fn main() -> Result<(), &'static str> {
         }
     };
 
-    println!("{:?}", workflow_runs);
+    println!("{:?}", &workflow_runs.workflow_runs[0]);
+
+    println!("{:?}", workflow_runs.workflow_runs[0].jobs_url);
+    let jobs = match req::<Jobs>(workflow_runs.workflow_runs[0].jobs_url.to_string(), &conf).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!("Error: \n {}", (*e).to_string());
+            return Err("Error");
+        }
+    };
+
+    println!("JOBS: {:?}", &jobs);
 
     let last_run_logs_url = &workflow_runs.workflow_runs[0].logs_url;
     let mut logs_zip: ZipArchive<Cursor<Bytes>> = match req_zip(last_run_logs_url, &conf).await {
