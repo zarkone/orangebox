@@ -12,8 +12,7 @@ use zip::read::{ZipArchive, ZipFile};
 // TODO: take from .git
 static REPO: &str = "zarkone/literally.el";
 
-#[derive(std::fmt::Debug)]
-
+#[derive(std::fmt::Debug, PartialEq)]
 enum WorkflowConclusion {
     Success,
     Failure,
@@ -245,6 +244,16 @@ fn print_file(file: &mut ZipFile) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn take_first<'p, T>(items: &'p Vec<T>, pred: &dyn Fn(&'p T) -> bool) -> Option<&'p T> {
+    for item in items.iter() {
+        if pred(item) {
+            return Some(item);
+        }
+    }
+
+    return None;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
     env_logger::init();
@@ -260,10 +269,15 @@ async fn main() -> Result<(), &'static str> {
         }
     };
 
-    println!("{:?}", &workflow_runs.workflow_runs[0]);
+    fn is_failed(run: &WorkflowRun) -> bool {
+        run.conclusion == WorkflowConclusion::Failure
+    }
 
-    println!("{:?}", workflow_runs.workflow_runs[0].jobs_url);
-    let jobs = match req::<Jobs>(workflow_runs.workflow_runs[0].jobs_url.to_string(), &conf).await {
+    let last_failed_run = take_first(&workflow_runs.workflow_runs, &is_failed).unwrap();
+
+    println!("{:?}", last_failed_run.jobs_url);
+
+    let jobs = match req::<Jobs>(last_failed_run.jobs_url.to_string(), &conf).await {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
@@ -271,16 +285,18 @@ async fn main() -> Result<(), &'static str> {
         }
     };
 
+    // TODO: implement trait for "conclusion"
+    let failed_job = take_first(&jobs.jobs, &is_failed);
     println!("JOBS: {:?}", &jobs);
 
-    let last_run_logs_url = &workflow_runs.workflow_runs[0].logs_url;
-    let mut logs_zip: ZipArchive<Cursor<Bytes>> = match req_zip(last_run_logs_url, &conf).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!("Error: \n {}", (*e).to_string());
-            return Err("Error");
-        }
-    };
+    let mut logs_zip: ZipArchive<Cursor<Bytes>> =
+        match req_zip(&last_failed_run.logs_url, &conf).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("Error: \n {}", (*e).to_string());
+                return Err("Error");
+            }
+        };
 
     // for i in 0..logs_zip.len() {}
     // let a = &workflow_runs.workflow_runs[0];
