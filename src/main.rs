@@ -13,10 +13,11 @@ use zip::read::{ZipArchive, ZipFile};
 static REPO: &str = "zarkone/literally.el";
 
 #[derive(std::fmt::Debug, PartialEq)]
-enum WorkflowConclusion {
+enum Conclusion {
     Success,
     Failure,
     Cancelled,
+    Skipped,
 }
 
 #[derive(std::fmt::Debug)]
@@ -43,16 +44,17 @@ impl serde::de::Error for UnknownConclusionError {
     }
 }
 
-impl<'de> Deserialize<'de> for WorkflowConclusion {
+impl<'de> Deserialize<'de> for Conclusion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
-            "success" => Ok(WorkflowConclusion::Success),
-            "failure" => Ok(WorkflowConclusion::Failure),
-            "cancelled" => Ok(WorkflowConclusion::Cancelled),
+            "success" => Ok(Conclusion::Success),
+            "failure" => Ok(Conclusion::Failure),
+            "cancelled" => Ok(Conclusion::Cancelled),
+            "skipped" => Ok(Conclusion::Skipped),
             conclusion => Err(serde::de::Error::custom(conclusion)),
         }
     }
@@ -62,7 +64,7 @@ impl<'de> Deserialize<'de> for WorkflowConclusion {
 struct WorkflowRun {
     logs_url: String,
     jobs_url: String,
-    conclusion: WorkflowConclusion,
+    conclusion: Conclusion,
 }
 
 #[derive(std::fmt::Debug)]
@@ -129,7 +131,7 @@ struct WorkflowRuns {
 struct Step {
     name: String,
     status: String,
-    conclusion: String,
+    conclusion: Conclusion,
     number: u32,
 }
 
@@ -137,7 +139,7 @@ struct Step {
 struct Job {
     name: String,
     status: String,
-    conclusion: String,
+    conclusion: Conclusion,
     steps: Vec<Step>,
 }
 
@@ -174,8 +176,6 @@ where
         .send()
         .await?;
 
-    println!("TOKEN::: {:?}, {:?}", &encoded_token, resp);
-
     if 403 == resp.status() {
         let e = AccessForbiddenError::new(&resp.text().await?);
         return Err(Box::new(e));
@@ -207,11 +207,7 @@ async fn req_zip(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
-    println!("{:?}", client.get(url));
-
     let resp: reqwest::Response = client.get(url).send().await?;
-
-    println!("TOKEN::: {:?}, {:?}", &encoded_token, resp);
 
     if 403 == resp.status() {
         let e = AccessForbiddenError::new(&resp.text().await?);
@@ -254,6 +250,16 @@ fn take_first<'p, T>(items: &'p Vec<T>, pred: &dyn Fn(&'p T) -> bool) -> Option<
     return None;
 }
 
+fn failed_step_filename(job: &Job) -> Option<String> {
+    for step in job.steps.iter() {
+        if step.conclusion == Conclusion::Failure {
+            return Some(format!("{}/{}_{}.txt", job.name, step.number, step.name));
+        }
+    }
+
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<(), &'static str> {
     env_logger::init();
@@ -265,46 +271,49 @@ async fn main() -> Result<(), &'static str> {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
-            return Err("Error");
+            return Err("Workflow runs Error");
         }
     };
 
-    fn is_failed(run: &WorkflowRun) -> bool {
-        run.conclusion == WorkflowConclusion::Failure
-    }
-
-    let last_failed_run = take_first(&workflow_runs.workflow_runs, &is_failed).unwrap();
-
-    println!("{:?}", last_failed_run.jobs_url);
+    let last_failed_run = take_first(&workflow_runs.workflow_runs, &|run: &WorkflowRun| -> bool {
+        run.conclusion == Conclusion::Failure
+    })
+    .unwrap();
 
     let jobs = match req::<Jobs>(last_failed_run.jobs_url.to_string(), &conf).await {
         Ok(resp) => resp,
         Err(e) => {
             eprintln!("Error: \n {}", (*e).to_string());
-            return Err("Error");
+            return Err("Jobs Error");
         }
     };
 
-    // TODO: implement trait for "conclusion"
-    let failed_job = take_first(&jobs.jobs, &is_failed);
-    println!("JOBS: {:?}", &jobs);
+    let failed_job = take_first(&jobs.jobs, &|job: &Job| -> bool {
+        job.conclusion == Conclusion::Failure
+    });
 
     let mut logs_zip: ZipArchive<Cursor<Bytes>> =
         match req_zip(&last_failed_run.logs_url, &conf).await {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("Error: \n {}", (*e).to_string());
-                return Err("Error");
+                return Err("Zip Error");
             }
         };
-
     // for i in 0..logs_zip.len() {}
     // let a = &workflow_runs.workflow_runs[0];
+    if let Some(failed_filename) = failed_step_filename(failed_job.unwrap()) {
+        for i in 0..logs_zip.len() {
+            let mut file = logs_zip.by_index(i).unwrap();
+            let filename = file.name();
+            if filename == failed_filename {
+                println!("Filename: {}", file.name());
+                print_file(&mut file)?
+            }
+        }
+    }
 
-    let mut file = logs_zip.by_index(0).unwrap();
-    println!("Filename: {}", file.name());
-
-    print_file(&mut file)?;
+    // print_file(&mut file)?;
 
     Ok(())
 }
